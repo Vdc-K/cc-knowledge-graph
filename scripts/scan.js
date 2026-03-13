@@ -232,8 +232,9 @@ async function scanThinking(ctx) {
           const name = node.label;
           if (name.length < 3) continue;
 
-          const inTitle = title.includes(name);
-          const occurrences = (content.match(new RegExp(name, 'g')) || []).length;
+          const wbRegex = new RegExp(`\\b${escapeRegExp(name)}\\b`, 'gi');
+          const inTitle = wbRegex.test(title);
+          const occurrences = (content.match(wbRegex) || []).length;
 
           // 短名称（3-4字符）：必须在标题中或出现 >= 4 次（避免 "dev" 这类词误匹配）
           // 长名称（5+字符）：标题匹配 or 出现 >= 2 次
@@ -334,8 +335,8 @@ function extractDecisionSections(content, decId, ctx) {
     const endIdx = i + 1 < matches.length ? matches[i + 1].index : content.length;
     const sectionContent = content.substring(startIdx, endIdx);
 
-    // 提取标题和日期：## 标题（YYYY-MM-DD）
-    const titleDateMatch = titleLine.match(/^(.+?)(?:（(\d{4}-\d{2}-\d{2})）)?$/);
+    // 提取标题和日期：## 标题（YYYY-MM-DD）或 ## 标题(YYYY-MM-DD)
+    const titleDateMatch = titleLine.match(/^(.+?)(?:[（(](\d{4}-\d{2}-\d{2})[）)])?$/);
     const title = titleDateMatch ? titleDateMatch[1].trim() : titleLine.trim();
     const date = titleDateMatch && titleDateMatch[2] ? titleDateMatch[2] : null;
 
@@ -356,10 +357,16 @@ function extractDecisionSections(content, decId, ctx) {
         const filePath = f.trim().replace(/`/g, '');
         if (filePath) {
           files.push(filePath);
-          // 尝试匹配到已有代码节点，建立"改动"边
+          // 尝试匹配到已有代码节点，建立"改动"边（路径后缀精确匹配，避免 index.ts 误匹配多个文件）
           for (const [nodeId, node] of nodeMap) {
-            if (node.type === 'code' && node.file && node.file.includes(filePath)) {
-              addEdge(decId, nodeId, '改动');
+            if (node.type === 'code' && node.file) {
+              const normalizedNode = node.file.replace(/\\/g, '/');
+              const normalizedQuery = filePath.replace(/\\/g, '/');
+              // 要求文件路径以查询路径结尾，且前面是路径分隔符（不是名称子串）
+              if (normalizedNode === normalizedQuery ||
+                  normalizedNode.endsWith('/' + normalizedQuery)) {
+                addEdge(decId, nodeId, '改动');
+              }
             }
           }
         }
@@ -452,7 +459,8 @@ function scanWikiLinks(content, sourceId, ctx) {
   while ((match = wikiRegex.exec(content)) !== null) {
     const ref = match[1].trim();
 
-    // 按优先级尝试匹配：skill → thinking → code → phantom
+    // 按优先级尝试匹配：skill → thinking → code → phantom（大小写不敏感）
+    const refLower = ref.toLowerCase();
     const candidates = [
       `skill:${ref}`,
       `thinking:${ref}`,
@@ -460,11 +468,25 @@ function scanWikiLinks(content, sourceId, ctx) {
     ];
 
     let resolved = false;
+    // 先精确匹配
     for (const candidateId of candidates) {
       if (nodeMap.has(candidateId)) {
         addEdge(sourceId, candidateId, '链接');
         resolved = true;
         break;
+      }
+    }
+    // 精确匹配失败 → 大小写不敏感遍历
+    if (!resolved) {
+      for (const [nodeId] of nodeMap) {
+        const colonIdx = nodeId.indexOf(':');
+        if (colonIdx < 0) continue;
+        const nodeRef = nodeId.substring(colonIdx + 1).toLowerCase();
+        if (nodeRef === refLower && ['skill', 'thinking', 'code'].includes(nodeId.substring(0, colonIdx))) {
+          addEdge(sourceId, nodeId, '链接');
+          resolved = true;
+          break;
+        }
       }
     }
 
