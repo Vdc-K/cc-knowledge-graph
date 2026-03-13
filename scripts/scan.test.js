@@ -6,7 +6,7 @@
  */
 
 const assert = require('assert');
-const { createGraph, validateGraph, extractDecisionSections, scanRoadmapSkillLinks, escapeRegExp } = require('./scan.js');
+const { createGraph, validateGraph, extractDecisionSections, scanRoadmapSkillLinks, escapeRegExp, extractFunctionNames } = require('./scan.js');
 const { queryGraph } = require('./query.js');
 
 let passed = 0;
@@ -334,6 +334,50 @@ test('edges 只包含子图内部的边', () => {
     assert.ok(nodeIds.includes(e.source), `source ${e.source} 应在子图中`);
     assert.ok(nodeIds.includes(e.target), `target ${e.target} 应在子图中`);
   }
+});
+
+// ==================== extractFunctionNames 测试 ====================
+
+console.log('\n--- extractFunctionNames ---');
+
+test('function 声明', () => {
+  const names = extractFunctionNames('function foo() {}\nfunction bar(x) { return x; }');
+  assert.ok(names.has('foo'), 'should detect foo');
+  assert.ok(names.has('bar'), 'should detect bar');
+});
+
+test('const 箭头函数', () => {
+  const names = extractFunctionNames('const foo = () => {}\nconst bar = async (x) => x');
+  assert.ok(names.has('foo'), 'should detect foo');
+  assert.ok(names.has('bar'), 'should detect bar');
+});
+
+test('class 方法', () => {
+  const code = `class Foo {\n  myMethod() {}\n  async asyncMethod(x) {}\n}`;
+  const names = extractFunctionNames(code);
+  assert.ok(names.has('myMethod'), 'should detect myMethod');
+  assert.ok(names.has('asyncMethod'), 'should detect asyncMethod');
+});
+
+test('关键字不被误检测', () => {
+  const names = extractFunctionNames('  if (x) {}\n  for (i) {}\n  while (true) {}');
+  assert.ok(!names.has('if'), 'if should not be detected');
+  assert.ok(!names.has('for'), 'for should not be detected');
+  assert.ok(!names.has('while'), 'while should not be detected');
+});
+
+test('混合风格全部检出', () => {
+  const code = [
+    'function legacy() {}',
+    'const arrow = (x) => x',
+    'class Cls {',
+    '  method() {}',
+    '}',
+  ].join('\n');
+  const names = extractFunctionNames(code);
+  assert.ok(names.has('legacy'));
+  assert.ok(names.has('arrow'));
+  assert.ok(names.has('method'));
 });
 
 // ==================== 汇总 ====================

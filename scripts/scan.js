@@ -235,7 +235,10 @@ async function scanThinking(ctx) {
           const inTitle = title.includes(name);
           const occurrences = (content.match(new RegExp(name, 'g')) || []).length;
 
-          if (inTitle || occurrences >= 2) {
+          // 短名称（3-4字符）：必须在标题中或出现 >= 4 次（避免 "dev" 这类词误匹配）
+          // 长名称（5+字符）：标题匹配 or 出现 >= 2 次
+          const threshold = name.length <= 4 ? 4 : 2;
+          if (inTitle || occurrences >= threshold) {
             addEdge(id, nodeId, '思考');
           }
         }
@@ -421,6 +424,23 @@ function escapeRegExp(string) {
 }
 
 /**
+ * 提取文件中的函数名（覆盖 function/箭头函数/class 方法）
+ */
+function extractFunctionNames(content) {
+  const names = new Set();
+  // function foo() / async function foo()
+  for (const m of content.matchAll(/function\s+(\w+)/g)) names.add(m[1]);
+  // const/let/var foo = (...) => 或 const foo = async (...) =>
+  for (const m of content.matchAll(/(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(/g)) names.add(m[1]);
+  // class 方法：缩进后的 methodName( 或 async methodName(
+  for (const m of content.matchAll(/^\s{2,}(?:async\s+)?(\w+)\s*\(/gm)) {
+    const name = m[1];
+    if (!['if', 'for', 'while', 'switch', 'catch', 'return'].includes(name)) names.add(name);
+  }
+  return names;
+}
+
+/**
  * [[wiki-link]] 语法识别
  * 扫描内容中的 [[xxx]] 标记，匹配到已有节点时建立"链接"边
  */
@@ -475,9 +495,8 @@ async function scanCodeRelations(ctx) {
         const contentA = await fs.readFile(fileA, 'utf-8');
         const contentB = await fs.readFile(fileB, 'utf-8');
 
-        const funcPattern = /function\s+(\w+)/g;
-        const funcsA = new Set([...contentA.matchAll(funcPattern)].map(m => m[1]));
-        const funcsB = new Set([...contentB.matchAll(funcPattern)].map(m => m[1]));
+        const funcsA = extractFunctionNames(contentA);
+        const funcsB = extractFunctionNames(contentB);
 
         const GENERIC_FUNCS = new Set(['main', 'init', 'run', 'start', 'stop', 'setup', 'test']);
         for (const fn of funcsA) {
@@ -595,4 +614,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createGraph, validateGraph, extractDecisionSections, scanRoadmapSkillLinks, escapeRegExp };
+module.exports = { createGraph, validateGraph, extractDecisionSections, scanRoadmapSkillLinks, escapeRegExp, extractFunctionNames };
