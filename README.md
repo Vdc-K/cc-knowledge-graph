@@ -81,7 +81,7 @@ Any key you omit falls back to the default.
 | `code` | `scripts/*.js` in each skill | `save.js` |
 | `thinking` | `3-Thinking/*.md` | `知识图谱设计` |
 | `project` | `2-Projects/` subdirs | `my-project` |
-| `decision` | `04-决策记录.md` files | decision record |
+| `decision` | `decision_making.md` files | decision record |
 | `roadmap` | `roadmap.md` files | roadmap doc |
 | `phantom` | unresolved references | auto-created |
 
