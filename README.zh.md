@@ -73,7 +73,7 @@ node .claude/skills/knowledge-graph/scripts/scan.js --query session-memory
 
 ## 适配自己的目录结构
 
-默认适配 Claude Code 风格项目。要改成自己的目录，在项目根目录创建 `kg.config.js`：
+默认适配 [OnlyClaude 风格](https://github.com/hicccc77/OnlyClaude)项目。要改成自己的目录，在项目根目录创建 `kg.config.js`：
 
 ```js
 // kg.config.js
