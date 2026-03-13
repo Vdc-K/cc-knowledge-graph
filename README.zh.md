@@ -99,7 +99,7 @@ module.exports = {
 | `code` | skill 目录下的 `scripts/*.js` | `save.js` |
 | `thinking` | `3-Thinking/*.md` | 设计文档 |
 | `project` | `2-Projects/` 子目录 | 项目文件夹 |
-| `decision` | `04-决策记录.md` | 决策记录文件 |
+| `decision` | `decision_making.md` | 决策记录文件 |
 | `roadmap` | `roadmap.md` | 路线图 |
 | `phantom` | 悬空引用自动创建 | 未解析的引用 |
 
