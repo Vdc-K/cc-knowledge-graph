@@ -14,7 +14,7 @@ const path = require('path');
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
-// 默认目录结构（适配 OnlyClaude 风格项目）
+// 默认目录结构（适配 Claude Code 风格项目）
 // 自定义：在项目根目录创建 kg.config.js，export default { scanPaths: {...}, outputFile: '...' }
 const DEFAULT_CONFIG = {
   outputFile: '0-System/knowledge-graph.json',
@@ -274,10 +274,10 @@ async function scanProjects(ctx) {
         const content = await fs.readFile(filePath, 'utf-8');
         const relFile = path.relative(PROJECT_DIR, filePath);
 
-        // 决策记录
-        if (file.includes('决策记录')) {
-          const decId = `doc:${dir}/决策记录`;
-          addNode(decId, 'decision', `${dir} 决策记录`, relFile, ['决策']);
+        // 决策记录（支持新命名 decision-making.md 和旧命名 04-决策记录.md）
+        if (file.includes('决策记录') || file === 'decision-making.md' || file === 'decision_making.md') {
+          const decId = `doc:${dir}/decision-making`;
+          addNode(decId, 'decision', `${dir} decision-making`, relFile, ['决策']);
 
           // 提取 sections
           const sections = extractDecisionSections(content, decId, ctx);
