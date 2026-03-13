@@ -14,7 +14,7 @@ const path = require('path');
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
-// 默认目录结构（适配 Claude Code 风格项目）
+// 默认目录结构（适配 OnlyClaude 风格项目）
 // 自定义：在项目根目录创建 kg.config.js，export default { scanPaths: {...}, outputFile: '...' }
 const DEFAULT_CONFIG = {
   outputFile: '0-System/knowledge-graph.json',
@@ -24,6 +24,10 @@ const DEFAULT_CONFIG = {
     thinking: '3-Thinking',
     inbox_thinking: '1-Inbox/thinking',
     system: '0-System',
+  },
+  // context-loader 配置（可选）
+  context: {
+    sessionMemory: null,  // session memory 文件路径，如 '0-System/last-session.md'
   },
 };
 
@@ -35,6 +39,7 @@ function loadConfig() {
     return {
       outputFile: userConfig.outputFile || DEFAULT_CONFIG.outputFile,
       scanPaths: { ...DEFAULT_CONFIG.scanPaths, ...(userConfig.scanPaths || {}) },
+      context: { ...DEFAULT_CONFIG.context, ...(userConfig.context || {}) },
     };
   } catch {
     return DEFAULT_CONFIG;
@@ -278,9 +283,9 @@ async function scanProjects(ctx) {
         const content = await fs.readFile(filePath, 'utf-8');
         const relFile = path.relative(PROJECT_DIR, filePath);
 
-        // 决策记录（支持新命名 decision-making.md 和旧命名 04-决策记录.md）
-        if (file.includes('决策记录') || file === 'decision-making.md' || file === 'decision_making.md') {
-          const decId = `doc:${dir}/decision-making`;
+        // 决策记录（支持新命名 decision_making.md、旧连字符命名 decision-making.md 和 04-决策记录.md）
+        if (file.includes('决策记录') || file === 'decision_making.md' || file === 'decision-making.md') {
+          const decId = `doc:${dir}/decision_making`;
           addNode(decId, 'decision', `${dir} decision-making`, relFile, ['决策']);
 
           // 提取 sections
@@ -562,24 +567,50 @@ async function main() {
   const queryIdx = args.indexOf('--query');
 
   if (queryIdx !== -1) {
-    // 查询模式
     const keyword = args[queryIdx + 1];
     if (!keyword) {
-      console.error('用法: node scan.js --query <keyword>');
+      console.error('用法: node scan.js --query <keyword> [--context]');
       process.exit(1);
     }
 
-    // 读取已有图谱
-    const graphPath = path.join(PROJECT_DIR, OUTPUT_FILE);
-    try {
-      const data = JSON.parse(await fs.readFile(graphPath, 'utf-8'));
-      const { queryGraph } = require('./query.js');
-      const result = queryGraph(data, keyword);
+    const contextMode = args.includes('--context');
 
-      // JSON 输出
+    // 尝试读取图谱（context 模式下图谱可选）
+    const graphPath = path.join(PROJECT_DIR, OUTPUT_FILE);
+    let graphData = null;
+    try {
+      graphData = JSON.parse(await fs.readFile(graphPath, 'utf-8'));
+    } catch {
+      if (!contextMode) {
+        console.error('查询失败: 图谱不存在，请先运行 node scan.js 生成图谱');
+        process.exit(1);
+      }
+    }
+
+    if (contextMode) {
+      // 上下文聚合模式：KG + memory + session-memory
+      const { queryContext } = require('./query.js');
+
+      // 从 config 读取 session-memory 路径
+      const sessionFile = CONFIG.context && CONFIG.context.sessionMemory
+        ? CONFIG.context.sessionMemory
+        : null;
+
+      const result = queryContext({
+        graph: graphData,
+        query: keyword,
+        projectDir: PROJECT_DIR,
+        sessionFile,
+      });
+
+      console.log(result);
+    } else {
+      // 纯 KG 查询模式
+      const { queryGraph } = require('./query.js');
+      const result = queryGraph(graphData, keyword);
+
       console.log(JSON.stringify(result, null, 2));
 
-      // 人可读摘要
       console.log('\n--- 摘要 ---');
       console.log(`关键词: ${keyword}`);
       console.log(`匹配节点: ${result.nodes.length}`);
@@ -590,10 +621,6 @@ async function main() {
           console.log(`  [${n.type}] ${n.label} (${n.id})`);
         }
       }
-    } catch (e) {
-      console.error('查询失败:', e.message);
-      console.error('请先运行 node scan.js 生成图谱');
-      process.exit(1);
     }
     return;
   }

@@ -166,7 +166,7 @@ test('缺失元数据时 graceful', () => {
 test('决策 files 匹配代码节点建立改动边', () => {
   const ctx = createGraph();
   ctx.addNode('code:myskill/index.ts', 'code', 'myskill/index.ts', '.claude/skills/myskill/scripts/index.ts');
-  ctx.addNode('doc:proj/决策记录', 'decision', '决策记录', '2-Projects/proj/decision-making.md');
+  ctx.addNode('doc:proj/决策记录', 'decision', '决策记录', '2-Projects/proj/decision_making.md');
 
   const content = `## 某决策（2024-01-01）
 

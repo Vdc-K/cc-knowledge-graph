@@ -47,7 +47,7 @@ node .claude/skills/knowledge-graph/scripts/scan.js --query <关键词>
 | code | `scripts/*.js` | save.js |
 | thinking | `3-Thinking/*.md` | 知识图谱设计 |
 | project | `2-Projects/` | OnlyClaude-优化 |
-| decision | `04-决策记录.md` | 含 sections 属性 |
+| decision | `decision_making.md` | 含 sections 属性 |
 | roadmap | `roadmap.md` | 任务关联 |
 | phantom | 悬空引用自动创建 | content-review |
 
