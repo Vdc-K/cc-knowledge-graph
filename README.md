@@ -55,7 +55,7 @@ Output: JSON subgraph + human-readable summary.
 
 ## Customizing Directory Structure
 
-By default the scanner expects an [OnlyClaude-style](https://github.com/hicccc77/OnlyClaude) project layout. To adapt it to your own structure, create `kg.config.js` at your project root:
+By default the scanner expects a Claude Code-style project layout. To adapt it to your own structure, create `kg.config.js` at your project root:
 
 ```js
 // kg.config.js
@@ -80,7 +80,7 @@ Any key you omit falls back to the default.
 | `skill` | `.claude/skills/*/SKILL.md` | `session-memory` |
 | `code` | `scripts/*.js` in each skill | `save.js` |
 | `thinking` | `3-Thinking/*.md` | `知识图谱设计` |
-| `project` | `2-Projects/` subdirs | `OnlyClaude-优化` |
+| `project` | `2-Projects/` subdirs | `my-project` |
 | `decision` | `04-决策记录.md` files | decision record |
 | `roadmap` | `roadmap.md` files | roadmap doc |
 | `phantom` | unresolved references | auto-created |
