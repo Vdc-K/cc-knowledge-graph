@@ -2,6 +2,10 @@
 
 > A navigation system for Claude Code projects — automatically builds a knowledge graph from your skills, thinking docs, and project files, then answers "what's related to X?" with a subgraph query.
 
+English · [中文](./README.zh.md)
+
+---
+
 ## Why
 
 When you have dozens of Claude Code skills, thinking docs, decision records, and project files, starting a new task means blindly grepping or opening files one by one. This skill builds a **structured graph** of nodes and relationships, so you (or cc) can pull the right context before starting work.
