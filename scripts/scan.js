@@ -23,6 +23,7 @@ const DEFAULT_CONFIG = {
     projects: '2-Projects',
     thinking: '3-Thinking',
     inbox_thinking: '1-Inbox/thinking',
+    inbox: '1-Inbox',
     system: '0-System',
   },
   // context-loader 配置（可选）
@@ -49,6 +50,16 @@ function loadConfig() {
 const CONFIG = loadConfig();
 const OUTPUT_FILE = CONFIG.outputFile;
 const SCAN_PATHS = CONFIG.scanPaths;
+
+const PROJECT_DOC_SKIP_DIRS = new Set([
+  '.git',
+  'node_modules',
+  '.next',
+  'dist',
+  'build',
+  'coverage',
+  '__pycache__',
+]);
 
 // ==================== 图谱上下文工厂 ====================
 
@@ -77,7 +88,13 @@ function createGraph() {
     graph.edges.push({ source, target, relation });
   }
 
-  return { graph, nodeMap, addNode, addEdge, edgeSet };
+  // 延迟边：需要所有节点就位后才能解析的边（wiki-link、related）
+  const deferredEdges = [];
+  function deferEdge(source, targetRef, relation, resolveOrder = ['skill', 'thinking', 'code']) {
+    deferredEdges.push({ source, targetRef, relation, resolveOrder });
+  }
+
+  return { graph, nodeMap, addNode, addEdge, edgeSet, deferredEdges, deferEdge };
 }
 
 // ==================== validateGraph ====================
@@ -148,7 +165,9 @@ async function scanSkills(ctx) {
           // C: Pull model — 读取显式声明的关系
           const dependsMatch = fm.match(/^depends:\s*(.+)/m);
           if (dependsMatch) {
-            const deps = dependsMatch[1].split(/[,，]\s*/).map(d => d.trim()).filter(Boolean);
+            // 去除可能的外层方括号（如 [knowledge-graph, tell-me]）
+            const rawDeps = dependsMatch[1].trim().replace(/^\[|\]$/g, '');
+            const deps = rawDeps.split(/[,，]\s*/).map(d => d.trim().replace(/^\[|\]$/g, '')).filter(Boolean).filter(d => d !== '[]');
             for (const dep of deps) {
               // dep 可以是 "skill-name" 或 "skill-name:relation-label"
               const [depName, depLabel] = dep.split(':');
@@ -158,10 +177,12 @@ async function scanSkills(ctx) {
 
           const relatedMatch = fm.match(/^related:\s*(.+)/m);
           if (relatedMatch) {
-            const related = relatedMatch[1].split(/[,，]\s*/).map(r => r.trim()).filter(Boolean);
+            // 去除可能的外层方括号（如 [eval, benchmark, decision]）
+            const rawRelated = relatedMatch[1].trim().replace(/^\[|\]$/g, '');
+            const related = rawRelated.split(/[,，]\s*/).map(r => r.trim().replace(/^\[|\]$/g, '')).filter(Boolean).filter(r => r !== '[]');
             for (const rel of related) {
-              // rel 可以是 skill 名或 thinking 文件名（不含 .md）
-              addEdge(`skill:${dir}`, `thinking:${rel}`, '相关');
+              // rel 可以是 skill 名或 thinking 文件名（不含 .md），延迟到所有节点就位后解析
+              ctx.deferEdge(`skill:${dir}`, rel, '相关', ['skill', 'thinking']);
             }
           }
         }
@@ -177,25 +198,66 @@ async function scanSkills(ctx) {
           addEdge(`skill:${dir}`, `skill:${depSkill}`, `依赖:${depWhat}`);
         }
 
-        // 扫描脚本文件
-        const scriptsDir = path.join(skillPath, 'scripts');
+        // 扫描脚本文件（skill 根目录 + scripts/ 递归）
+        const SCRIPT_EXTS = new Set(['.js', '.ts', '.mjs', '.py', '.sh']);
+        const SKIP_DIRS = new Set(['node_modules', '__pycache__', '.git', 'dist']);
+
+        function isTestFile(name) {
+          return name.includes('.test.') || name.includes('.spec.') ||
+                 name === 'vitest.config.js' || name === 'vitest.config.ts' ||
+                 name === 'jest.config.js' || name === 'jest.config.ts';
+        }
+
+        // 扫描 skill 根目录（第一层，不递归）
         try {
-          const scripts = await fs.readdir(scriptsDir);
-          for (const script of scripts) {
-            if (script.endsWith('.test.js') || script.endsWith('.test.ts')) continue;
-            if (script.endsWith('.js') || script.endsWith('.ts')) {
-              const scriptFile = path.relative(PROJECT_DIR, path.join(scriptsDir, script));
-              const scriptId = `code:${dir}/${script}`;
-              addNode(scriptId, 'code', `${dir}/${script}`, scriptFile, [dir]);
+          const rootEntries = await fs.readdir(skillPath, { withFileTypes: true });
+          for (const entry of rootEntries) {
+            if (!entry.isFile()) continue;
+            const ext = path.extname(entry.name);
+            if (!SCRIPT_EXTS.has(ext)) continue;
+            if (isTestFile(entry.name)) continue;
+            const scriptFile = path.relative(PROJECT_DIR, path.join(skillPath, entry.name));
+            const scriptId = `code:${dir}/${entry.name}`;
+            addNode(scriptId, 'code', `${dir}/${entry.name}`, scriptFile, [dir]);
+            addEdge(`skill:${dir}`, scriptId, '实现');
+          }
+        } catch (e) {
+          // 跳过
+        }
+
+        // 递归扫描 scripts/ 子目录
+        const scriptsDir = path.join(skillPath, 'scripts');
+        async function scanScriptsDir(currentDir, relPrefix) {
+          let entries;
+          try {
+            entries = await fs.readdir(currentDir, { withFileTypes: true });
+          } catch (e) {
+            return; // 目录不存在
+          }
+          for (const entry of entries) {
+            if (entry.isDirectory()) {
+              if (SKIP_DIRS.has(entry.name)) continue;
+              await scanScriptsDir(path.join(currentDir, entry.name), `${relPrefix}${entry.name}/`);
+            } else if (entry.isFile()) {
+              const ext = path.extname(entry.name);
+              if (!SCRIPT_EXTS.has(ext)) continue;
+              if (isTestFile(entry.name)) continue;
+              const fullPath = path.join(currentDir, entry.name);
+              const scriptFile = path.relative(PROJECT_DIR, fullPath);
+              // ID 格式：code:skillname/subpath/file.ext（subpath 相对于 scripts/）
+              const scriptId = `code:${dir}/${relPrefix}${entry.name}`;
+              const label = `${dir}/${relPrefix}${entry.name}`;
+              addNode(scriptId, 'code', label, scriptFile, [dir]);
               addEdge(`skill:${dir}`, scriptId, '实现');
             }
           }
-        } catch (e) {
-          // 没有 scripts 目录
         }
+        await scanScriptsDir(scriptsDir, '');
 
       } catch (e) {
-        // 没有 SKILL.md
+        if (e.code !== 'ENOENT') {
+          console.warn(`[scan] SKILL.md 解析失败: ${skillMd} — ${e.message}`);
+        }
       }
     }
   } catch (e) {
@@ -209,7 +271,8 @@ async function scanSkills(ctx) {
 async function scanThinking(ctx) {
   const { addNode, addEdge, nodeMap } = ctx;
 
-  for (const dirKey of ['thinking', 'inbox_thinking']) {
+  for (const dirKey of ['thinking', 'inbox_thinking', 'inbox']) {
+    if (!SCAN_PATHS[dirKey]) continue; // 配置中未定义此路径，跳过
     const thinkDir = path.join(PROJECT_DIR, SCAN_PATHS[dirKey]);
 
     try {
@@ -250,7 +313,9 @@ async function scanThinking(ctx) {
         }
       }
     } catch (e) {
-      // 目录不存在
+      if (e.code !== 'ENOENT') {
+        console.warn(`[scan] Thinking 目录扫描失败: ${thinkDir} — ${e.message}`);
+      }
     }
   }
 }
@@ -260,7 +325,8 @@ async function scanThinking(ctx) {
  */
 async function scanProjects(ctx) {
   const { addNode, addEdge, nodeMap } = ctx;
-  const projDir = path.join(PROJECT_DIR, SCAN_PATHS.projects);
+  const projectRoot = PROJECT_DIR;
+  const projDir = path.join(projectRoot, SCAN_PATHS.projects);
 
   try {
     const dirs = await fs.readdir(projDir);
@@ -270,18 +336,18 @@ async function scanProjects(ctx) {
       const stat = await fs.stat(dirPath);
       if (!stat.isDirectory()) continue;
 
-      const relDir = path.relative(PROJECT_DIR, dirPath);
+      const relDir = path.relative(projectRoot, dirPath);
       const projId = `project:${dir}`;
       addNode(projId, 'project', dir, relDir, []);
 
-      const files = await fs.readdir(dirPath);
+      const docFiles = await collectProjectMarkdownFiles(dirPath);
 
-      for (const file of files) {
-        if (!file.endsWith('.md')) continue;
-
-        const filePath = path.join(dirPath, file);
+      for (const filePath of docFiles) {
+        const file = path.basename(filePath);
         const content = await fs.readFile(filePath, 'utf-8');
-        const relFile = path.relative(PROJECT_DIR, filePath);
+        const relFile = path.relative(projectRoot, filePath);
+        const relWithinProject = toPosix(path.relative(dirPath, filePath));
+        const lowerRelWithinProject = relWithinProject.toLowerCase();
 
         // 决策记录（支持新命名 decision_making.md、旧连字符命名 decision-making.md 和 04-决策记录.md）
         if (file.includes('决策记录') || file === 'decision_making.md' || file === 'decision-making.md') {
@@ -299,7 +365,7 @@ async function scanProjects(ctx) {
           scanWikiLinks(content, decId, ctx);
 
           // 决策条目关联到 skill
-          const decisionTitles = content.matchAll(/^##\s+(.+?)（/gm);
+          const decisionTitles = content.matchAll(/^##\s+(.+?)[（(]/gm);
           for (const match of decisionTitles) {
             const title = match[1].trim();
             for (const [nodeId, node] of nodeMap) {
@@ -308,6 +374,7 @@ async function scanProjects(ctx) {
               }
             }
           }
+          continue;
         }
 
         // Roadmap — 只建节点，不扫描 skill 关联（规划层不属于结构图）
@@ -315,12 +382,89 @@ async function scanProjects(ctx) {
           const rmId = `doc:${dir}/roadmap`;
           addNode(rmId, 'roadmap', `${dir} Roadmap`, relFile, ['路线图']);
           addEdge(projId, rmId, '包含');
+          scanWikiLinks(content, rmId, ctx);
+          continue;
+        }
+
+        if (shouldIndexProjectMarkdown(lowerRelWithinProject)) {
+          const docMeta = getProjectDocMeta(lowerRelWithinProject);
+          const titleMatch = content.match(/^#\s+(.+)/m);
+          const label = titleMatch ? titleMatch[1].trim() : relWithinProject.replace(/\.md$/i, '');
+          const docKey = relWithinProject.replace(/\.md$/i, '');
+          const docId = `doc:${dir}/${toPosix(docKey)}`;
+          addNode(docId, 'doc', label, relFile, ['文档', `doc-kind:${docMeta.kind}`]);
+          const docNode = nodeMap.get(docId);
+          if (docNode) {
+            docNode.doc_kind = docMeta.kind;
+            docNode.path_depth = docMeta.depth;
+            docNode.doc_priority = docMeta.priority;
+          }
+          addEdge(projId, docId, '包含');
+          scanWikiLinks(content, docId, ctx);
         }
       }
     }
   } catch (e) {
-    console.warn('扫描项目目录失败:', e.message);
+    if (e.code !== 'ENOENT') {
+      console.warn(`[scan] 项目目录扫描失败: ${projDir} — ${e.message}`);
+    }
   }
+}
+
+async function collectProjectMarkdownFiles(rootDir) {
+  const result = [];
+
+  async function walk(currentDir) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith('.')) continue;
+        if (PROJECT_DOC_SKIP_DIRS.has(entry.name)) continue;
+        await walk(path.join(currentDir, entry.name));
+        continue;
+      }
+
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      result.push(path.join(currentDir, entry.name));
+    }
+  }
+
+  await walk(rootDir);
+  result.sort();
+  return result;
+}
+
+function shouldIndexProjectMarkdown(relWithinProject) {
+  return getProjectDocMeta(relWithinProject) !== null;
+}
+
+function getProjectDocMeta(relWithinProject) {
+  const normalized = toPosix(relWithinProject);
+  const lower = normalized.toLowerCase();
+  const base = path.posix.basename(lower);
+  const depth = normalized.split('/').length - 1;
+
+  if (lower === 'docs' || lower.startsWith('docs/') || lower.includes('/docs/')) {
+    return { kind: 'docs', depth, priority: 2 };
+  }
+  if (base === 'project.md') {
+    return { kind: 'project', depth, priority: 4 };
+  }
+  if (base === 'readme.md' || /^readme(\.[^.]+)?\.md$/.test(base)) {
+    return { kind: 'readme', depth, priority: 5 };
+  }
+  if (base === 'decision_making.md' || base === 'decision-making.md') {
+    return { kind: 'decision', depth, priority: 6 };
+  }
+  if (base.includes('roadmap')) {
+    return { kind: 'roadmap', depth, priority: 4 };
+  }
+
+  return null;
+}
+
+function toPosix(p) {
+  return p.replace(/\\/g, '/');
 }
 
 /**
@@ -457,52 +601,14 @@ function extractFunctionNames(content) {
  * 扫描内容中的 [[xxx]] 标记，匹配到已有节点时建立"链接"边
  */
 function scanWikiLinks(content, sourceId, ctx) {
-  const { nodeMap, addNode, addEdge } = ctx;
+  const { deferEdge } = ctx;
   const wikiRegex = /\[\[([^\]]+)\]\]/g;
   let match;
 
   while ((match = wikiRegex.exec(content)) !== null) {
     const ref = match[1].trim();
-
-    // 按优先级尝试匹配：skill → thinking → code → phantom（大小写不敏感）
-    const refLower = ref.toLowerCase();
-    const candidates = [
-      `skill:${ref}`,
-      `thinking:${ref}`,
-      `code:${ref}`,
-    ];
-
-    let resolved = false;
-    // 先精确匹配
-    for (const candidateId of candidates) {
-      if (nodeMap.has(candidateId)) {
-        addEdge(sourceId, candidateId, '链接');
-        resolved = true;
-        break;
-      }
-    }
-    // 精确匹配失败 → 大小写不敏感遍历
-    if (!resolved) {
-      for (const [nodeId] of nodeMap) {
-        const colonIdx = nodeId.indexOf(':');
-        if (colonIdx < 0) continue;
-        const nodeRef = nodeId.substring(colonIdx + 1).toLowerCase();
-        if (nodeRef === refLower && ['skill', 'thinking', 'code'].includes(nodeId.substring(0, colonIdx))) {
-          addEdge(sourceId, nodeId, '链接');
-          resolved = true;
-          break;
-        }
-      }
-    }
-
-    // 没有匹配节点 → 创建 phantom 节点
-    if (!resolved) {
-      const phantomId = `phantom:${ref}`;
-      if (!nodeMap.has(phantomId)) {
-        addNode(phantomId, 'phantom', ref, null, []);
-      }
-      addEdge(sourceId, phantomId, '链接');
-    }
+    // 延迟到所有节点就位后解析，避免扫描顺序导致 phantom 残留
+    deferEdge(sourceId, ref, '链接', ['skill', 'thinking', 'code']);
   }
 }
 
@@ -512,28 +618,83 @@ function scanWikiLinks(content, sourceId, ctx) {
 async function scanCodeRelations(ctx) {
   const { graph, addEdge } = ctx;
   const codeNodes = graph.nodes.filter(n => n.type === 'code');
+  const GENERIC_FUNCS = new Set(['main', 'init', 'run', 'start', 'stop', 'setup', 'test']);
 
-  for (let i = 0; i < codeNodes.length; i++) {
-    for (let j = i + 1; j < codeNodes.length; j++) {
-      const fileA = path.join(PROJECT_DIR, codeNodes[i].file);
-      const fileB = path.join(PROJECT_DIR, codeNodes[j].file);
-
-      try {
-        const contentA = await fs.readFile(fileA, 'utf-8');
-        const contentB = await fs.readFile(fileB, 'utf-8');
-
-        const funcsA = extractFunctionNames(contentA);
-        const funcsB = extractFunctionNames(contentB);
-
-        const GENERIC_FUNCS = new Set(['main', 'init', 'run', 'start', 'stop', 'setup', 'test']);
-        for (const fn of funcsA) {
-          if (funcsB.has(fn) && !GENERIC_FUNCS.has(fn)) {
-            addEdge(codeNodes[i].id, codeNodes[j].id, `共享:${fn}`);
-          }
-        }
-      } catch (e) {
-        // 文件读取失败
+  // 倒排索引：fn -> [nodeId, ...]（每个文件只读一次）
+  const funcIndex = new Map();
+  for (const node of codeNodes) {
+    try {
+      const content = await fs.readFile(path.join(PROJECT_DIR, node.file), 'utf-8');
+      for (const fn of extractFunctionNames(content)) {
+        if (GENERIC_FUNCS.has(fn)) continue;
+        if (!funcIndex.has(fn)) funcIndex.set(fn, []);
+        funcIndex.get(fn).push(node.id);
       }
+    } catch (e) {
+      if (e.code !== 'ENOENT') {
+        console.warn(`[scan] 代码文件读取失败: ${node.file} — ${e.message}`);
+      }
+    }
+  }
+
+  // 共享函数建边
+  for (const [fn, nodeIds] of funcIndex) {
+    if (nodeIds.length < 2) continue;
+    for (let i = 0; i < nodeIds.length; i++) {
+      for (let j = i + 1; j < nodeIds.length; j++) {
+        addEdge(nodeIds[i], nodeIds[j], `共享:${fn}`);
+      }
+    }
+  }
+}
+
+// ==================== 延迟边解析 ====================
+
+/**
+ * 解析延迟边（wiki-link、related 等需要所有节点就位后才能解析的边）
+ * 修复：前向引用不再产生 phantom 残留
+ */
+function resolveDeferredEdges(ctx) {
+  const { deferredEdges, nodeMap, addNode, addEdge } = ctx;
+
+  for (const { source, targetRef, relation, resolveOrder } of deferredEdges) {
+    const refLower = targetRef.toLowerCase();
+    let resolved = false;
+
+    // 精确匹配
+    for (const prefix of resolveOrder) {
+      const candidateId = `${prefix}:${targetRef}`;
+      if (nodeMap.has(candidateId)) {
+        addEdge(source, candidateId, relation);
+        resolved = true;
+        break;
+      }
+    }
+
+    // 大小写不敏感匹配
+    if (!resolved) {
+      for (const [nodeId] of nodeMap) {
+        const colonIdx = nodeId.indexOf(':');
+        if (colonIdx < 0) continue;
+        const prefix = nodeId.substring(0, colonIdx);
+        const nodeRef = nodeId.substring(colonIdx + 1).toLowerCase();
+        if (nodeRef === refLower && resolveOrder.includes(prefix)) {
+          addEdge(source, nodeId, relation);
+          resolved = true;
+          break;
+        }
+      }
+    }
+
+    // 仍未解析 → 创建 phantom
+    if (!resolved) {
+      const phantomId = `phantom:${targetRef}`;
+      if (!nodeMap.has(phantomId)) {
+        addNode(phantomId, 'phantom', targetRef, null, []);
+        const phantomNode = nodeMap.get(phantomId);
+        if (phantomNode) phantomNode.phantom = true;
+      }
+      addEdge(source, phantomId, relation);
     }
   }
 }
@@ -565,6 +726,30 @@ async function writeGraph(ctx) {
 async function main() {
   const args = process.argv.slice(2);
   const queryIdx = args.indexOf('--query');
+  const benchmarkMode = args.includes('--benchmark');
+
+  if (benchmarkMode) {
+    const graphPath = path.join(PROJECT_DIR, OUTPUT_FILE);
+    let graphData = null;
+    try {
+      graphData = JSON.parse(await fs.readFile(graphPath, 'utf-8'));
+    } catch {
+      console.error('Benchmark 失败: 图谱不存在，请先运行 node scan.js 生成图谱');
+      process.exit(1);
+    }
+
+    const { runBenchmarks, formatBenchmarkReport } = require('./benchmark.js');
+    const results = runBenchmarks({
+      graph: graphData,
+      projectDir: PROJECT_DIR,
+      sessionFile: null,
+    });
+    console.log(formatBenchmarkReport(results));
+    if (results.some(result => !result.passed)) {
+      process.exit(1);
+    }
+    return;
+  }
 
   if (queryIdx !== -1) {
     const keyword = args[queryIdx + 1];
@@ -642,6 +827,10 @@ async function main() {
 
   await scanCodeRelations(ctx);
 
+  // 解析延迟边（wiki-link、related 等需要所有节点就位后才能正确解析的边）
+  resolveDeferredEdges(ctx);
+  console.log(`  延迟边: ${ctx.deferredEdges.length} 条已解析`);
+
   // 验证图谱，处理悬空引用
   const phantomNodes = validateGraph(ctx);
   if (phantomNodes.length > 0) {
@@ -663,4 +852,16 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createGraph, validateGraph, extractDecisionSections, scanRoadmapSkillLinks, escapeRegExp, extractFunctionNames };
+module.exports = {
+  createGraph,
+  validateGraph,
+  resolveDeferredEdges,
+  extractDecisionSections,
+  scanRoadmapSkillLinks,
+  escapeRegExp,
+  extractFunctionNames,
+  scanProjects,
+  collectProjectMarkdownFiles,
+  shouldIndexProjectMarkdown,
+  getProjectDocMeta,
+};

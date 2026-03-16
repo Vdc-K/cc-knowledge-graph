@@ -55,7 +55,7 @@ Output: JSON subgraph + human-readable summary.
 
 ## Customizing Directory Structure
 
-By default the scanner expects an [OnlyClaude-style](https://github.com/hicccc77/OnlyClaude) project layout. To adapt it to your own structure, create `kg.config.js` at your project root:
+By default the scanner expects an [Claude Code-style](https://github.com/anthropics/claude-code) project layout. To adapt it to your own structure, create `kg.config.js` at your project root:
 
 ```js
 // kg.config.js
